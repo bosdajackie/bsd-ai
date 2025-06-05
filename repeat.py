@@ -2,7 +2,7 @@ from typing import List, Union, Generator, Iterator
 
 class Pipeline:
     def __init__(self):
-        self.name = "00 Repeater Example"
+        self.name = "TESTING - DO NOT USE"
         pass
 
     async def on_startup(self):
