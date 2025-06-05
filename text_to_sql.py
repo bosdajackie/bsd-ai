@@ -15,14 +15,13 @@ from llama_index.core.prompts import PromptTemplate
 logging.basicConfig(level=logging.DEBUG)
 
 class Pipeline:        
-
     def __init__(self):
         self.ollama_host = "http://10.10.12.30:11435/api/chat"
         self.access_api_url = "http://host.docker.internal:8001"
         self.model_name = "deepseek-r1"
         self.table_name = "ProductApplication_ACES"
 
-        self.name = "Access API with LLM"
+        self.name = "Text to SQL"
         self.llm = OpenAILike(
             model=self.model_name,
             api_base=self.ollama_host,
@@ -33,7 +32,7 @@ class Pipeline:
     async def on_startup(self):
         print(f"on_startup:{__name__}")
         # Initialize schema on startup
-        await self.fetch_schema(self.valves.table_name)
+        await self.fetch_schema(self.table_name)
 
     async def on_shutdown(self):
         print(f"on_shutdown:{__name__}")
@@ -41,7 +40,7 @@ class Pipeline:
     async def fetch_schema(self, table_name: str):
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.valves.access_api_url}/schema/{table_name}") as resp:
+                async with session.get(f"{self.access_api_url}/schema/{table_name}") as resp:
                     data = await resp.json()
                     if "columns" in data:
                         self.table_schema = data["columns"]
@@ -57,7 +56,7 @@ class Pipeline:
         params = {"q": query}
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.valves.access_api_url}/query", params=params) as resp:
+                async with session.get(f"{self.access_api_url}/query", params=params) as resp:
                     data = await resp.json()
                     if "result" in data:
                         return f"✅ Results:\n{data['result']}"
@@ -68,7 +67,7 @@ class Pipeline:
 
     async def generate_sql_query(self, user_question: str) -> str:
         if not self.table_schema:
-            success = await self.fetch_schema(self.valves.table_name)
+            success = await self.fetch_schema(self.table_name)
             if not success:
                 return None
 
@@ -92,7 +91,7 @@ class Pipeline:
         - String concatenation uses & instead of ||
         - Column names with spaces need square brackets, e.g., [Product Name]
         
-        Available columns in {self.valves.table_name} table:
+        Available columns in {self.table_name} table:
         {schema_str}
         
         Question: {user_question}<|eot_id|><|start_header_id|>assistant<|end_header_id|>

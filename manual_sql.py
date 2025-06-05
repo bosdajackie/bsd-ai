@@ -11,7 +11,7 @@ import asyncio
 
 class Pipeline:
     def __init__(self):
-        self.name = "Access API Proxy"
+        self.name = "Manual SQL"
 
     async def on_startup(self):
         print(f"on_startup:{__name__}")
