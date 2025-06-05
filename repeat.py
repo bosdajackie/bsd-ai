@@ -2,7 +2,7 @@ from typing import List, Union, Generator, Iterator
 
 class Pipeline:
     def __init__(self):
-        self.name = "TESTING - DO NOT USE"
+        self.name = "00 Repeater Example"
         pass
 
     async def on_startup(self):
@@ -21,3 +21,4 @@ class Pipeline:
         
         print(f"received message from user: {user_message}") #user_message to logs
         return (f"received message from user: {user_message}") #user_message to the UI
+        

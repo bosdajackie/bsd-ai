@@ -11,3 +11,12 @@ conn_str = (
 
 conn = pyodbc.connect(conn_str)
 cursor = conn.cursor()
+
+# Query first 10 rows from ProductApplication_ACES table
+sql_query = "SELECT TOP 10 * FROM ProductApplication_ACES"
+cursor.execute(sql_query)
+
+# Fetch and print results
+results = cursor.fetchall()
+for row in results:
+    print(row)
