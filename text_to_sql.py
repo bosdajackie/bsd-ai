@@ -10,7 +10,6 @@ import aiohttp
 import asyncio
 import logging
 from urllib.parse import quote
-import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,7 +19,7 @@ class Pipeline:
     def __init__(self):
         self.ollama_host = "http://10.10.12.30:11435/api/chat"
         self.access_api_url = "http://host.docker.internal:8001"
-        self.model_name = "gemma3:4b"
+        self.model_name = "qwen2.5-coder:3b"
         self.name = "Text to SQL"
         self.available_tables: List[str] = []
         self.table_schemas: Dict[str, List[tuple]] = {}
@@ -34,54 +33,8 @@ class Pipeline:
     async def on_shutdown(self):
         logger.info(f"Shutting down pipeline: {__name__}")
 
-    async def fetch_tables(self) -> bool:
-        """Fetch all available tables from the Access database."""
-        logger.info("Fetching tables from database")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.access_api_url}/tables") as resp:
-                    data = await resp.json()
-                    if "tables" in data:
-                        self.available_tables = data["tables"]
-                        logger.info(f"Successfully fetched {len(self.available_tables)} tables")
-                        return True
-                    else:
-                        logger.error(f"Tables error: {data.get('error', 'Unknown error')}")
-                        return False
-        except Exception as e:
-            logger.error(f"Failed to fetch tables: {e}")
-            return False
-
-    def find_matching_table(self, table_name: str) -> Optional[str]:
-        """Find exact table name match (case-insensitive)."""
-        if not table_name:
-            return None
-        table_name_lower = table_name.lower().strip()
-        for available_table in self.available_tables:
-            if available_table.lower() == table_name_lower:
-                return available_table
-        return None
-
-    async def fetch_schema(self, table_name: str) -> bool:
-        """Fetch schema for a specific table."""
-        logger.info(f"Fetching schema for table: {table_name}")
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{self.access_api_url}/schema/{table_name}") as resp:
-                    data = await resp.json()
-                    if "columns" in data:
-                        self.table_schemas[table_name] = data["columns"]
-                        logger.info(f"Successfully fetched schema with {len(data['columns'])} columns")
-                        return True
-                    else:
-                        logger.error(f"Schema error: {data.get('error', 'Unknown error')}")
-                        return False
-        except Exception as e:
-            logger.error(f"Failed to fetch schema!!: {e}")
-            return False
-
     async def chat_completion(self, prompt: str) -> Optional[str]:
-        """Make a chat completion request to Ollama."""
+        """Make a chat completion request to Ollama"""
         logger.info("Making chat completion request")
         try:
             async with aiohttp.ClientSession() as session:
@@ -107,6 +60,42 @@ class Pipeline:
             logger.error(f"Chat completion error: {e}")
             return None
 
+    async def fetch_tables(self) -> bool:
+        """Fetch all available tables from the Access database."""
+        logger.info("Fetching tables from database")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.access_api_url}/tables") as resp:
+                    data = await resp.json()
+                    if "tables" in data:
+                        self.available_tables = data["tables"]
+                        logger.info(f"Successfully fetched {len(self.available_tables)} tables")
+                        return True
+                    else:
+                        logger.error(f"Tables error: {data.get('error', 'Unknown error')}")
+                        return False
+        except Exception as e:
+            logger.error(f"Failed to fetch tables: {e}")
+            return False
+
+    async def fetch_schema(self, table_name: str) -> bool:
+        """Fetch schema for a specific table."""
+        logger.info(f"Fetching schema for table: {table_name}")
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{self.access_api_url}/schema/{table_name}") as resp:
+                    data = await resp.json()
+                    if "columns" in data:
+                        self.table_schemas[table_name] = data["columns"]
+                        logger.info(f"Successfully fetched schema with {len(data['columns'])} columns")
+                        return True
+                    else:
+                        logger.error(f"Schema error: {data.get('error', 'Unknown error')}")
+                        return False
+        except Exception as e:
+            logger.error(f"Failed to fetch schema: {e}")
+            return False
+
     async def select_relevant_table(self, user_question: str) -> Optional[str]:
         """Use LLM to select the most relevant table for the query."""
         logger.info(f"Selecting relevant table for question: {user_question}")
@@ -127,9 +116,10 @@ Question: {user_question}"""
         
         try:
             selected_table = await self.chat_completion(prompt)
-            if selected_table and selected_table.strip() in self.available_tables:
+            if selected_table in self.available_tables:
                 return selected_table
-            return None
+            else:
+                return None
         except Exception as e:
             logger.error(f"Error selecting table: {e}")
             return None
@@ -167,14 +157,27 @@ Available columns:
 {schema_str}
 
 Question: {user_question}
+
+IMPORTANT:
+DO NOT return anything OTHER than the SQL query. Do not include any other text or formatting. Do not explain the query.
 """
         
         try:
-            sql_query = await self.chat_completion(prompt)
-            if sql_query:
-                logger.info(f"Generated SQL query: {sql_query}")
-                # Clean up the query - remove markdown formatting and extra newlines
-                sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
+            response = await self.chat_completion(prompt)
+            if response:
+                logger.info(f"Generated SQL response: {response}")
+                # Extract code from first markdown code cell
+                start = response.find("```sql")
+                if start == -1:
+                    start = response.find("```")
+                if start != -1:
+                    end = response.find("```", start + 3)
+                    if end != -1:
+                        sql_query = response[start:end].split("\n", 1)[1].strip()
+                    else:
+                        sql_query = response[start:].split("\n", 1)[1].strip()
+                else:
+                    sql_query = response.strip()
                 # Normalize newlines to single spaces
                 sql_query = " ".join(line.strip() for line in sql_query.splitlines() if line.strip())
                 logger.info(f"Cleaned SQL query: {sql_query}")
@@ -185,9 +188,6 @@ Question: {user_question}
 
     async def fetch_query_result(self, query: str) -> str:
         """Execute SQL query and fetch results."""
-        # clean up the query - remove any markdown and normalize whitespace
-        query = query.replace("```sql", "").replace("```", "").strip()
-        query = " ".join(line.strip() for line in query.splitlines() if line.strip())
         logger.info(f"Executing query: {query}")
         params = {"q": query}
         try:
@@ -209,11 +209,8 @@ Question: {user_question}
         """Summarize the query results in natural language."""
         logger.info("Generating summary of query results")
         
-        # Remove the emoji prefixes from query_result if present
-        query_result = query_result.replace("✅ Results:\n", "").replace("❌ Error:\n", "")
-        
         prompt = f"""You are a helpful AI Assistant that explains database query results in natural language.
-Given a user's question, the SQL query used, and the query results, provide a clear and concise summary.
+Given a user's question, the SQL query used, and the query results, provide a clear and concise explanation of the results.
 
 Original Question: {question}
 
@@ -225,7 +222,7 @@ Query Results:
 
 If the query result contains an error, explain the error in natural language.
 
-Please provide a natural language summary of the results that directly answers the original question.
+Your response should answer the original question posed by the user using the data from the query results.
 Keep your response concise and focused on the data. If there was an error, explain what might have gone wrong.
 """
 
