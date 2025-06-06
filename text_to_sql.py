@@ -19,7 +19,9 @@ class Pipeline:
     def __init__(self):
         self.ollama_host = "http://10.10.12.30:11435/api/chat"
         self.access_api_url = "http://host.docker.internal:8001"
-        self.model_name = "qwen2.5-coder:3b"
+        self.classifier_model_name = "gemma3:4b"
+        self.query_generation_model_name = "qwen2.5-coder:3b"
+        self.output_model_name = "deepseek-r1"
         self.name = "Text to SQL"
         self.available_tables: List[str] = []
         self.table_schemas: Dict[str, List[tuple]] = {}
@@ -33,13 +35,21 @@ class Pipeline:
     async def on_shutdown(self):
         logger.info(f"Shutting down pipeline: {__name__}")
 
-    async def chat_completion(self, prompt: str) -> Optional[str]:
+    async def chat_completion(self, prompt: str, model_usage: str) -> Optional[str]:
         """Make a chat completion request to Ollama"""
         logger.info("Making chat completion request")
+        if model_usage == "classifier":
+            model_name = self.classifier_model_name
+        elif model_usage == "query_generation":
+            model_name = self.query_generation_model_name
+        elif model_usage == "output":
+            model_name = self.output_model_name
+        else:
+            raise ValueError(f"Invalid model usage: {model_usage}")
         try:
             async with aiohttp.ClientSession() as session:
                 payload = {
-                    "model": self.model_name,
+                    "model": model_name,
                     "messages": [
                         {"role": "system", "content": prompt}
                     ],
@@ -115,7 +125,7 @@ Available tables:
 Question: {user_question}"""
         
         try:
-            selected_table = await self.chat_completion(prompt)
+            selected_table = await self.chat_completion(prompt, "classifier")
             if selected_table in self.available_tables:
                 return selected_table
             else:
@@ -163,7 +173,7 @@ DO NOT return anything OTHER than the SQL query. Do not include any other text o
 """
         
         try:
-            response = await self.chat_completion(prompt)
+            response = await self.chat_completion(prompt, "query_generation")
             if response:
                 logger.info(f"Generated SQL response: {response}")
                 # Extract code from first markdown code cell
@@ -227,7 +237,7 @@ Keep your response concise and focused on the data. If there was an error, expla
 """
 
         try:
-            summary = await self.chat_completion(prompt)
+            summary = await self.chat_completion(prompt, "output")
             if summary:
                 logger.info("Successfully generated summary")
                 return summary.strip()
