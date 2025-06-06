@@ -19,7 +19,6 @@ class Pipeline:
         self.ollama_host = "http://10.10.12.30:11435/api/chat"
         self.access_api_url = "http://host.docker.internal:8001"
         self.model_name = "deepseek-r1"
-        self.table_name = "ProductApplication_ACES"
 
         self.name = "Text to SQL"
         self.llm = OpenAILike(
@@ -31,8 +30,6 @@ class Pipeline:
 
     async def on_startup(self):
         print(f"on_startup:{__name__}")
-        # Initialize schema on startup
-        await self.fetch_schema(self.table_name)
 
     async def on_shutdown(self):
         print(f"on_shutdown:{__name__}")
