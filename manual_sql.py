@@ -11,7 +11,7 @@ import asyncio
 
 class Pipeline:
     def __init__(self):
-        self.name = "Manual SQL"
+        self.name = "Access API Proxy Stream"
 
     async def on_startup(self):
         print(f"on_startup:{__name__}")
@@ -30,6 +30,25 @@ class Pipeline:
                         return f"✅ Results:\n{data['result']}"
                     else:
                         return f"❌ Error:\n{data.get('error', 'Unknown error')}"
+        except Exception as e:
+            return f"❌ Request failed: {str(e)}"
+        
+    async def fetch_query_stream(self, query: str) -> str:
+        url = "http://host.docker.internal:8001/query_stream"
+        params = {"q": query}
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, timeout=60) as resp:
+                    if resp.status != 200:
+                        return f"❌ Server returned error code {resp.status}"
+                    
+                    output = ""
+                    async for line in resp.content:
+                        # Decode bytes and append
+                        output += line.decode("utf-8")
+                    
+                    return f"✅ Results (streamed):\n{output}"
         except Exception as e:
             return f"❌ Request failed: {str(e)}"
 
