@@ -16,6 +16,16 @@ CONN_STR = (
 
 stream_chunk_size = 100
 
+def decode_sketchy_utf16(raw_bytes):
+    """Handle problematic UTF-16-LE encoded strings from MS Access."""
+    s = raw_bytes.decode("utf-16le", "ignore")
+    try:
+        n = s.index('\u0000')
+        s = s[:n]  # respect null terminator
+    except ValueError:
+        pass
+    return s
+
 @app.get("/tables")
 def get_tables():
     logger.info("Getting tables")
@@ -52,9 +62,18 @@ def get_schema(table_name: str):
     logger.info(f"Getting schema for table: {table_name}")
     try:
         conn = pyodbc.connect(CONN_STR)
+        
+        # Set up the UTF-16 converter for this operation
+        prev_converter = conn.get_output_converter(pyodbc.SQL_WVARCHAR)
+        conn.add_output_converter(pyodbc.SQL_WVARCHAR, decode_sketchy_utf16)
+        
         cursor = conn.cursor()
         cursor.columns(table_name)
         columns = [(column.column_name, column.type_name) for column in cursor.fetchall()]
+        
+        # Restore the previous converter
+        conn.add_output_converter(pyodbc.SQL_WVARCHAR, prev_converter)
+        
         cursor.close()
         conn.close()
         return {"columns": columns}
