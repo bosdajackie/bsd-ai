@@ -106,18 +106,24 @@ class Pipeline:
             logger.error(f"Failed to fetch schema: {e}")
             return False
 
-    async def select_relevant_table(self, user_question: str) -> Optional[str]:
-        """Use LLM to select the most relevant table for the query."""
-        logger.info(f"Selecting relevant table for question: {user_question}")
+    async def select_relevant_tables(self, user_question: str) -> List[str]:
+        """Use LLM to select the relevant tables for the query."""
+        logger.info(f"Selecting relevant tables for question: {user_question}")
 
         if not self.available_tables:
             await self.fetch_tables()
             
         tables_str = "\n".join([f"- {table}" for table in self.available_tables])
         
-        prompt = f"""You are a helpful AI Assistant that analyzes questions and selects the most relevant table from a database.
-Given a question and a list of available tables, select the single most relevant table that would contain the information needed.
-Only return the exact table name in plain text, no emojis, nothing else. Make sure to match the exact case of the table name from the list.
+        prompt = f"""You are a helpful AI Assistant that analyzes questions and selects the relevant tables from a database.
+Given a question and a list of available tables, select ALL tables that would be needed to answer the question completely.
+Consider relationships between tables and whether joins might be needed.
+
+Return ONLY a comma-separated list of the exact table names, no other text. Make sure to match the exact case of the table names from the list.
+Example outputs:
+TableA, TableB
+SingleTable
+Table1, Table2, Table3
 
 Available tables:
 {tables_str}
@@ -125,25 +131,39 @@ Available tables:
 Question: {user_question}"""
         
         try:
-            selected_table = await self.chat_completion(prompt, "classifier")
-            if selected_table in self.available_tables:
-                return selected_table
-            else:
-                return None
+            selected_tables_str = await self.chat_completion(prompt, "classifier")
+            if selected_tables_str:
+                # Split and clean the table names
+                selected_tables = [t.strip() for t in selected_tables_str.split(',')]
+                # Validate that all tables exist
+                valid_tables = [t for t in selected_tables if t in self.available_tables]
+                if valid_tables:
+                    return valid_tables
+            return []
         except Exception as e:
-            logger.error(f"Error selecting table: {e}")
-            return None
+            logger.error(f"Error selecting tables: {e}")
+            return []
 
-    async def generate_sql_query(self, table_name: str, user_question: str) -> Optional[str]:
-        """Generate SQL query based on schema and user question."""
-        logger.info(f"Generating SQL query for table {table_name}")
-        if table_name not in self.table_schemas:
-            success = await self.fetch_schema(table_name)
-            if not success:
-                logger.error(f"Failed to fetch schema for table {table_name}")
-                return None
+    async def generate_sql_query(self, tables: List[str], user_question: str) -> Optional[str]:
+        """Generate SQL query based on schemas and user question."""
+        logger.info(f"Generating SQL query for tables: {tables}")
+        
+        # Fetch schemas for all tables if not already cached
+        schemas = {}
+        for table in tables:
+            if table not in self.table_schemas:
+                success = await self.fetch_schema(table)
+                if not success:
+                    logger.error(f"Failed to fetch schema for table {table}")
+                    return None
+            schemas[table] = self.table_schemas[table]
 
-        schema_str = "\n".join([f"- {col[0]} ({col[1]})" for col in self.table_schemas[table_name]])
+        # Build schema string for all tables
+        schema_str = ""
+        for table in tables:
+            schema_str += f"\nTable: {table}\nColumns:\n"
+            schema_str += "\n".join([f"- {col[0]} ({col[1]})" for col in schemas[table]])
+            schema_str += "\n"
         
         prompt = f"""You are a helpful AI Assistant providing Microsoft Access SQL commands to users.
 
@@ -157,14 +177,15 @@ CRITICAL MS ACCESS SQL REQUIREMENTS:
 4. Use * for wildcards in LIKE patterns
 5. Date literals use # instead of quotes, e.g., #2024-05-19#
 6. String concatenation uses & instead of ||
+7. When joining tables, always qualify column names with table names (e.g., [Table1].[Column1])
+8. For INNER JOIN, use this syntax: [Table1] INNER JOIN [Table2] ON [Table1].[Column1] = [Table2].[Column2]
 
 Unless the user specifies a number of results, always use TOP 5 in your queries.
 Never query for all columns - only select specific columns relevant to the question.
 Use DISTINCT when appropriate to avoid duplicates.
+If multiple tables are provided, determine if joins are needed and use appropriate join conditions.
 
-Table name: {table_name}
-Available columns:
-{schema_str}
+Available tables and their schemas:{schema_str}
 
 Question: {user_question}
 
@@ -215,14 +236,17 @@ DO NOT return anything OTHER than the SQL query. Do not include any other text o
             logger.error(f"Request failed: {e}")
             return f"❌ Request failed: {str(e)}"
 
-    async def summarize_results(self, question: str, sql_query: str, query_result: str) -> Optional[str]:
+    async def summarize_results(self, question: str, tables: List[str], sql_query: str, query_result: str) -> Optional[str]:
         """Summarize the query results in natural language."""
         logger.info("Generating summary of query results")
         
+        tables_str = ", ".join(tables)
         prompt = f"""You are a helpful AI Assistant that explains database query results in natural language.
-Given a user's question, the SQL query used, and the query results, provide a clear and concise explanation of the results.
+Given a user's question, the tables queried, the SQL query used, and the query results, provide a clear and concise explanation of the results.
 
 Original Question: {question}
+
+Tables Queried: {tables_str}
 
 SQL Query Used:
 {sql_query}
@@ -230,10 +254,13 @@ SQL Query Used:
 Query Results:
 {query_result}
 
-If the query result contains an error, explain the error in natural language.
+If the query result contains an error, explain the error in natural language and suggest if it might be related to table relationships or join conditions.
 
-Your response should answer the original question posed by the user using the data from the query results.
-Keep your response concise and focused on the data. If there was an error, explain what might have gone wrong.
+Your response should:
+1. Answer the original question using the data from the query results
+2. If multiple tables were involved, explain how the data was combined
+3. Keep the response concise and focused on the data
+4. If there was an error, explain what might have gone wrong, especially regarding table relationships
 """
 
         try:
@@ -251,14 +278,14 @@ Keep your response concise and focused on the data. If there was an error, expla
             try:
                 logger.info(f"Processing question: {user_message}")
                 
-                # Select relevant table
-                selected_table = await self.select_relevant_table(user_message)
-                if not selected_table:
-                    return "Failed to identify relevant table for your question."
-                logger.info(f"Selected table: {selected_table}")
+                # Select relevant tables
+                selected_tables = await self.select_relevant_tables(user_message)
+                if not selected_tables:
+                    return "Failed to identify relevant tables for your question."
+                logger.info(f"Selected tables: {selected_tables}")
                 
                 # Generate SQL query
-                sql_query = await self.generate_sql_query(selected_table, user_message)
+                sql_query = await self.generate_sql_query(selected_tables, user_message)
                 if not sql_query:
                     return "Failed to generate SQL query from your question."
                 
@@ -266,10 +293,10 @@ Keep your response concise and focused on the data. If there was an error, expla
                 result = await self.fetch_query_result(sql_query)
                 
                 # Generate summary
-                summary = await self.summarize_results(user_message, sql_query, result)
+                summary = await self.summarize_results(user_message, selected_tables, sql_query, result)
                 summary_text = f"\nSummary:\n{summary}" if summary else ""
                 
-                return f"Selected table: {selected_table}\n\nGenerated SQL Query:\n```sql\n{sql_query}\n```\n\n{result}{summary_text}"
+                return f"Selected tables: {', '.join(selected_tables)}\n\nGenerated SQL Query:\n```sql\n{sql_query}\n```\n\n{result}{summary_text}"
             
             except Exception as e:
                 logger.error(f"Error in pipeline: {e}")
