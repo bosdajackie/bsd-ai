@@ -115,20 +115,21 @@ class Pipeline:
             
         tables_str = "\n".join([f"- {table}" for table in self.available_tables])
         
-        prompt = f"""You are a helpful AI Assistant that analyzes questions and selects the relevant tables from a database.
-Given a question and a list of available tables, select ALL tables that would be needed to answer the question completely.
-Consider relationships between tables and whether joins might be needed.
+        prompt = f"""You are an expert in database systems. Your task is to analyze a natural language question and choose the most relevant tables from the following list.
 
-Return ONLY a comma-separated list of the exact table names, no other text. Make sure to match the exact case of the table names from the list.
-Example outputs:
-TableA, TableB
-SingleTable
-Table1, Table2, Table3
+Rules:
+- Return ALL tables needed to answer the question completely.
+- If the question clearly implies a relationship between entities, include all relevant tables and assume a JOIN may be needed.
+- Output should be a comma-separated list of exact table names from the list. No extra words.
 
 Available tables:
 {tables_str}
 
-Question: {user_question}"""
+Question:
+{user_question}
+
+Respond with only the table names, comma-separated.
+"""
         
         try:
             selected_tables_str = await self.chat_completion(prompt, "classifier")
@@ -165,32 +166,34 @@ Question: {user_question}"""
             schema_str += "\n".join([f"- {col[0]} ({col[1]})" for col in schemas[table]])
             schema_str += "\n"
         
-        prompt = f"""You are a helpful AI Assistant providing Microsoft Access SQL commands to users.
+        prompt = f"""You are a helpful assistant that generates Microsoft Access SQL queries from user questions.
 
-Given an input question, create a syntactically correct Microsoft Access SQL query to run.
-You can order the results by a relevant column to return the most interesting examples in the database.
+Given a question and a list of tables with their columns, generate a syntactically correct SQL query for MS Access. Follow these strict rules:
 
-CRITICAL MS ACCESS SQL REQUIREMENTS:
-1. Use TOP n instead of LIMIT n (e.g., 'SELECT TOP 5' not 'SELECT ... LIMIT 5')
-2. Use square brackets [ ] for ALL table and column names
-3. Put TOP immediately after SELECT (e.g., 'SELECT TOP 5 [Column]' not 'SELECT [Column] TOP 5')
-4. Use * for wildcards in LIKE patterns
-5. Date literals use # instead of quotes, e.g., #2024-05-19#
-6. String concatenation uses & instead of ||
-7. When joining tables, always qualify column names with table names (e.g., [Table1].[Column1])
-8. For INNER JOIN, use this syntax: [Table1] INNER JOIN [Table2] ON [Table1].[Column1] = [Table2].[Column2]
+MS Access SQL Rules:
+1. Use `SELECT TOP n` instead of `LIMIT n`.
+2. Use square brackets around ALL table and column names.
+3. Put `TOP` immediately after `SELECT` (e.g. `SELECT TOP 5 [Name]`)
+4. Use `*` only in LIKE clauses (e.g., `[Column] LIKE '*value*'`)
+5. Use `#` for date literals (e.g., `#2024-05-19#`)
+6. Use `&` for string concatenation instead of `||`
+7. For JOINs, use:
+   `[Table1] INNER JOIN [Table2] ON [Table1].[Key] = [Table2].[Key]`
+8. Qualify columns in multi-table queries (e.g., `[Customers].[Name]`)
 
-Unless the user specifies a number of results, always use TOP 5 in your queries.
-Never query for all columns - only select specific columns relevant to the question.
-Use DISTINCT when appropriate to avoid duplicates.
-If multiple tables are provided, determine if joins are needed and use appropriate join conditions.
+Other Rules:
+- If no number of results is mentioned, return `TOP 5`.
+- Do NOT select all columns (`SELECT *`). Select only those relevant to the question.
+- Use `DISTINCT` where needed to remove duplicates.
 
-Available tables and their schemas:{schema_str}
+Schemas:
+{schema_str}
 
-Question: {user_question}
+User Question:
+{user_question}
 
-IMPORTANT:
-DO NOT return anything OTHER than the SQL query. Do not include any other text or formatting. Do not explain the query.
+Return only the SQL query. Do NOT include any explanation or markdown formatting.
+
 """
         
         try:
@@ -241,26 +244,30 @@ DO NOT return anything OTHER than the SQL query. Do not include any other text o
         logger.info("Generating summary of query results")
         
         tables_str = ", ".join(tables)
-        prompt = f"""You are a helpful AI Assistant that explains database query results in natural language.
-Given a user's question, the tables queried, the SQL query used, and the query results, provide a clear and concise explanation of the results.
+        prompt = f"""You are a database assistant summarizing SQL query results into natural language.
 
-Original Question: {question}
+Given a user's question, the SQL used, and the query results, write a short explanation of what the results mean.
 
-Tables Queried: {tables_str}
+Rules:
+- Keep your explanation under 4 lines.
+- Focus on the key patterns or values returned.
+- If multiple tables were joined, explain what was joined and why.
+- If there's an error, clearly explain what likely went wrong (e.g., invalid column, join failure).
 
-SQL Query Used:
+Question:
+{question}
+
+Tables Queried:
+{tables}
+
+SQL Used:
 {sql_query}
 
-Query Results:
+Results:
 {query_result}
 
-If the query result contains an error, explain the error in natural language and suggest if it might be related to table relationships or join conditions.
+Write your summary below:
 
-Your response should:
-1. Answer the original question using the data from the query results
-2. If multiple tables were involved, explain how the data was combined
-3. Keep the response concise and focused on the data
-4. If there was an error, explain what might have gone wrong, especially regarding table relationships
 """
 
         try:
@@ -273,6 +280,42 @@ Your response should:
             logger.error(f"Error generating summary: {e}")
             return None
 
+    async def _try_execute_query(self, user_question: str, selected_tables: List[str], attempt: int = 1, max_attempts: int = 3, previous_error: str = None) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """
+        Try to generate and execute a SQL query with retry logic.
+        Returns a tuple of (sql_query, query_result, error_message).
+        """
+        logger.info(f"Attempting to generate and execute query (attempt {attempt}/{max_attempts})")
+        
+        # If we have a previous error, modify the query generation prompt
+        error_context = f"\nPrevious attempt failed with error: {previous_error}\nPlease fix the query accordingly." if previous_error else ""
+        
+        # Generate SQL query
+        sql_query = await self.generate_sql_query(selected_tables, user_question + error_context)
+        if not sql_query:
+            return None, None, "Failed to generate SQL query"
+        
+        # Execute query and get results
+        result = await self.fetch_query_result(sql_query)
+        
+        # Check if there was an error in the result
+        if result.startswith("❌"):
+            error_message = result.split("\n")[1] if "\n" in result else result[2:].strip()
+            
+            if attempt < max_attempts:
+                logger.info(f"Query failed, attempting retry {attempt + 1}/{max_attempts}")
+                return await self._try_execute_query(
+                    user_question,
+                    selected_tables,
+                    attempt + 1,
+                    max_attempts,
+                    error_message
+                )
+            else:
+                return sql_query, result, f"Failed after {max_attempts} attempts. Last error: {error_message}"
+        
+        return sql_query, result, None
+
     def pipe(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Union[str, Generator, Iterator]:
         async def process():
             try:
@@ -284,19 +327,20 @@ Your response should:
                     return "Failed to identify relevant tables for your question."
                 logger.info(f"Selected tables: {selected_tables}")
                 
-                # Generate SQL query
-                sql_query = await self.generate_sql_query(selected_tables, user_message)
-                if not sql_query:
-                    return "Failed to generate SQL query from your question."
+                # Try to execute query with retries
+                sql_query, result, error = await self._try_execute_query(user_message, selected_tables)
                 
-                # Execute query and get results
-                result = await self.fetch_query_result(sql_query)
+                if error and not result:  # Complete failure
+                    return f"Failed to execute query: {error}"
                 
-                # Generate summary
+                # Generate summary if we have results
                 summary = await self.summarize_results(user_message, selected_tables, sql_query, result)
                 summary_text = f"\nSummary:\n{summary}" if summary else ""
                 
-                return f"Selected tables: {', '.join(selected_tables)}\n\nGenerated SQL Query:\n```sql\n{sql_query}\n```\n\n{result}{summary_text}"
+                # If we had errors but eventually succeeded, include retry information
+                retry_info = f"\nNote: Query succeeded after retries. Original error: {error}\n" if error else ""
+                
+                return f"Selected tables: {', '.join(selected_tables)}\n{retry_info}\nGenerated SQL Query:\n```sql\n{sql_query}\n```\n\n{result}{summary_text}"
             
             except Exception as e:
                 logger.error(f"Error in pipeline: {e}")
