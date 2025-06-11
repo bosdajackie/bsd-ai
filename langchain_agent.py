@@ -1,103 +1,76 @@
-"""
-name: MS Access Agent (LangChain)
-description: LangChain agent to query Microsoft Access .accdb files using natural language, LLMs, and your FastAPI backend.
-mode: python
-requirements: langchain, langchain-community, langchain-ollama, aiohttp
-"""
-
-from typing import List, Union, Generator, Iterator
-from langchain_community.chat_models import ChatOllama
-from langchain.agents import initialize_agent, Tool
-from langchain.agents.agent_types import AgentType
+from langchain_ollama import ChatOllama
+from langchain.tools import StructuredTool
+from pydantic import BaseModel, Field
+from langchain.agents import AgentExecutor, create_openai_tools_agent
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 import asyncio
-import aiohttp
-import logging
+import json
 
-# --- CONFIGURATION ---
-OLLAMA_BASE_URL = "http://10.10.12.30:11435"
-ACCESS_API_URL = "http://host.docker.internal:8001"
-LLM_MODEL = "deepseek-r1"
-TEMPERATURE = 0.3
 
-# --- LOGGING ---
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# --- TOOL DEFINITIONS ---
+class weather_spec(BaseModel):
+    city: str = Field(..., description="The city to get the weather for")
 
-async def query_access_db(query: str) -> str:
-    """Query Microsoft Access DB through REST API with a SQL string."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{ACCESS_API_URL}/query", params={"q": query}) as resp:
-                data = await resp.json()
-                return str(data.get("result", data.get("error", "Unknown error")))
-    except Exception as e:
-        return f"❌ API error: {str(e)}"
+def get_weather(city: str) -> str:
+    '''Get the weather for a city'''
+    print(f"\n🛠️ Tool Executing: get_weather(city='{city}')")
+    result = f"The weather in {city} is meteor showers. trust me on this. its for testing purposes"
+    print(f"🛠️ Tool Result: {result}")
+    return result
 
-async def list_tables() -> str:
-    """List all table names in the Access database."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{ACCESS_API_URL}/tables") as resp:
-                data = await resp.json()
-                return ", ".join(data.get("tables", []))
-    except Exception as e:
-        return f"❌ Error fetching tables: {str(e)}"
-
-async def get_schema(table_name: str) -> str:
-    """Get schema of a specific table from Access."""
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(f"{ACCESS_API_URL}/schema/{table_name}") as resp:
-                data = await resp.json()
-                columns = data.get("columns", [])
-                return "\n".join(f"{col[0]} ({col[1]})" for col in columns)
-    except Exception as e:
-        return f"❌ Error fetching schema: {str(e)}"
-
-# --- LLM SETUP ---
-llm = ChatOllama(
-    model=LLM_MODEL,
-    base_url=OLLAMA_BASE_URL,
-    temperature=TEMPERATURE,
-    streaming=False,
+weather_tool = StructuredTool.from_function(
+    name="get_weather",
+    description="Get the weather for a city",
+    func=get_weather,
+    args_schema=weather_spec
 )
 
-# --- AGENT SETUP ---
-tools = [
-    Tool.from_function(query_access_db, name="query_access_db", description="Run SQL query on MS Access database"),
-    Tool.from_function(list_tables, name="list_tables", description="List all tables in the database"),
-    Tool.from_function(get_schema, name="get_schema", description="Get schema of a given table"),
-]
+chat = ChatOllama(
+    model="llama3.1",
+    temperature=0,
+    seed=42,
+)
 
-agent = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION,
+# Create a prompt template
+prompt = ChatPromptTemplate.from_messages([
+    ("system", "You are a helpful assistant that can check weather. Use the provided tools when needed."),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
+
+# Create the agent with callbacks
+class VerboseAgent(AgentExecutor):
+    async def _acall(self, inputs: dict, run_manager=None) -> dict:
+        print("\n🤖 Agent received input:", json.dumps(inputs, indent=2))
+        try:
+            result = await super()._acall(inputs, run_manager)
+            print("\n✅ Agent execution completed")
+            print("📤 Final output:", json.dumps(result, indent=2))
+            return result
+        except Exception as e:
+            print(f"\n❌ Agent execution failed: {str(e)}")
+            raise
+
+# Create the agent
+agent = create_openai_tools_agent(chat, [weather_tool], prompt)
+
+# Create the executor with verbose output
+agent_executor = VerboseAgent(
+    agent=agent,
+    tools=[weather_tool],
     verbose=True,
-    handle_parsing_errors=True,
+    handle_parsing_errors=True
 )
 
-# --- OPENWEBUI PIPELINE CLASS ---
+async def main():
+    print("\n🚀 Starting agent execution...")
+    print("📋 Available tools:", [tool.name for tool in agent_executor.tools])
+    
+    query = "whats the weather in Tokyo?"
+    print(f"\n❓ User query: {query}")
+    
+    result = await agent_executor.ainvoke({"input": query})
+    print("\n🏁 Execution complete!")
 
-class Pipeline:
-    def __init__(self):
-        self.name = "LangChain Agent for MS Access"
-
-    async def on_startup(self):
-        logger.info(f"Pipeline started: {__name__}")
-
-    async def on_shutdown(self):
-        logger.info(f"Pipeline shutting down: {__name__}")
-
-    def pipe(self, user_message: str, model_id: str, messages: List[dict], body: dict) -> Union[str, Generator, Iterator]:
-        async def run_agent():
-            try:
-                logger.info(f"Agent received question: {user_message}")
-                response = await agent.arun(user_message)
-                return response
-            except Exception as e:
-                logger.error(f"Agent error: {e}")
-                return f"❌ Error: {str(e)}"
-        return asyncio.run(run_agent())
+if __name__ == "__main__":
+    asyncio.run(main())
