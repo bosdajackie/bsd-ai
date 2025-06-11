@@ -57,9 +57,9 @@ def run_query(q: str = Query(...)):
         logger.error(f"Query error: {str(e)}")
         return {"error": str(e)}
 
-@app.get("/schema/{table_name}")
-def get_schema(table_name: str):
-    logger.info(f"Getting schema for table: {table_name}")
+@app.get("/columns/{table_name}")
+def get_columns(table_name: str):
+    logger.info(f"Getting columns for table: {table_name}")
     try:
         conn = pyodbc.connect(CONN_STR)
         
@@ -69,7 +69,22 @@ def get_schema(table_name: str):
         
         cursor = conn.cursor()
         cursor.columns(table_name)
-        columns = [(column.column_name, column.type_name) for column in cursor.fetchall()]
+        
+        # Fetch detailed column information
+        columns = []
+        for column in cursor.fetchall():
+            try:
+                column_info = {
+                "name": column.column_name,
+                "type": column.type_name,
+                "size": column.column_size,
+                "nullable": bool(column.nullable),
+                    "description": column.remarks if column.remarks else None
+                }
+                columns.append(column_info)
+            except Exception as e:
+                logger.error(f"Error processing column: {str(e)}")
+                continue
         
         # Restore the previous converter
         conn.add_output_converter(pyodbc.SQL_WVARCHAR, prev_converter)
@@ -78,37 +93,6 @@ def get_schema(table_name: str):
         conn.close()
         return {"columns": columns}
     except Exception as e:
-        logger.error(f"Schema error: {str(e)}")
+        logger.error(f"Columns error: {str(e)}")
         return {"error": str(e)}
-    
-
-def stream_query(query: str):
-    try:
-        conn = pyodbc.connect(CONN_STR)
-        cursor = conn.cursor()
-
-        # Execute the query
-        cursor.execute(query)
-
-        # Yield column headers first
-        column_names = [desc[0] for desc in cursor.description]
-        yield ",".join(column_names) + "\n"
-
-        while True:
-            rows = cursor.fetchmany(stream_chunk_size)
-            if not rows:
-                break
-            for row in rows:
-                # Convert row tuple to comma-separated string
-                yield ",".join(map(str, row)) + "\n"
-
-        cursor.close()
-        conn.close()
-    except Exception as e:
-        yield f"ERROR: {str(e)}\n"
-
-
-@app.get("/query_stream")
-def run_streaming_query(q: str = Query(...)):
-    return StreamingResponse(stream_query(q), media_type="text/plain")
 
