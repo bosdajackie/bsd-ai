@@ -59,7 +59,7 @@ db_get_columns_tool = StructuredTool.from_function(
 
 
 chat = ChatOllama(
-    model="llama3.1",
+    model="qwen3",
     temperature=0,
     seed=42,
 )
