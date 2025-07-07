@@ -1,9 +1,16 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, UploadFile, File
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, JSONResponse
 import pyodbc
 from fastapi.responses import StreamingResponse
 import logging
+import os
 
 app = FastAPI()
+
+# Mount static files for plots
+if os.path.exists("plots"):
+    app.mount("/plots", StaticFiles(directory="plots"), name="plots")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,6 +32,18 @@ def decode_sketchy_utf16(raw_bytes):
     except ValueError:
         pass
     return s
+
+@app.post("/save_plot")
+async def save_plot(file: UploadFile = File(...)):
+    plots_dir = "plots"
+    if not os.path.exists(plots_dir):
+        os.makedirs(plots_dir)
+    filename = file.filename
+    file_path = os.path.join(plots_dir, filename)
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+    return JSONResponse({"filename": filename})
 
 @app.get("/tables")
 def get_tables():
@@ -95,4 +114,14 @@ def get_columns(table_name: str):
     except Exception as e:
         logger.error(f"Columns error: {str(e)}")
         return {"error": str(e)}
+
+@app.get("/plots/{filename}")
+def get_plot(filename: str):
+    """Serve plot images"""
+    plot_path = os.path.join("plots", filename)
+    if os.path.exists(plot_path):
+        logger.info(f"Saving plot to {plot_path}")
+        return FileResponse(plot_path, media_type="image/png")
+    else:
+        return {"error": "Plot not found"}
 

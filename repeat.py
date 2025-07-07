@@ -1,4 +1,5 @@
 from typing import List, Union, Generator, Iterator
+import time
 
 class Pipeline:
     def __init__(self):
@@ -20,5 +21,7 @@ class Pipeline:
         # This function is called when a new user_message is receieved.
         
         print(f"received message from user: {user_message}") #user_message to logs
-        return (f"received message from user: {user_message}") #user_message to the UI
+        yield (f"received message from user: {user_message}\n") #user_message to the UI
+        time.sleep(1)
+        yield (f"received message from user: {user_message}\n") #user_message to the UI
         
