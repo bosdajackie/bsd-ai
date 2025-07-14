@@ -168,7 +168,11 @@ class Pipeline:
         # Prepare monthly, customer-segmented data for the stacked bar chart
         df['month'] = df['so_date'].dt.to_period('M').dt.to_timestamp()
         monthly_customer_qty = df.groupby(['month', 'cust_id'])['qty'].sum().unstack(fill_value=0)
-        print(f"[DEBUG] Monthly customer quantity (for stacked bar): {monthly_customer_qty}")
+        # Ensure all months in the range are present, even if there are no sales
+        all_months = pd.date_range(df['month'].min(), df['month'].max(), freq='MS')
+        monthly_customer_qty = monthly_customer_qty.reindex(all_months, fill_value=0)
+        monthly_customer_qty.index.name = 'month'
+        print(f"[DEBUG] Monthly customer quantity (with all months): {monthly_customer_qty}")
         
         # Format x labels as 'Mon YYYY'
         month_labels = [d.strftime('%b %Y') for d in monthly_customer_qty.index]
@@ -184,37 +188,75 @@ class Pipeline:
         pie_labels = pie_data.index
         pie_values = pie_data.values
         
-        # Create the plot in memory
-        plt.figure(figsize=(16, 12))
-        # 1. Stacked bar chart: monthly sales quantity by customer
-        plt.subplot(3, 1, 1)
-        ax1 = plt.gca()
-        bars = monthly_customer_qty.plot(kind='bar', stacked=True, ax=ax1, colormap='tab20', width=1.0)
-        ax1.set_title(f'Monthly Sales Quantity Distribution by Customer for Part {part_number}', fontsize=14, fontweight='bold')
-        ax1.set_xlabel('Month')
-        ax1.set_ylabel('Total Quantity Ordered')
+        # Create the plot in memory with the new layout
+        fig = plt.figure(figsize=(16, 12))
+        gs = plt.GridSpec(2, 2, height_ratios=[1, 1], width_ratios=[2, 1], hspace=0.45, wspace=0.25)  # Increased hspace for more vertical spacing
+        # Top half: Stacked bar chart (histogram)
+        ax1 = fig.add_subplot(gs[0, :])
+        bars = monthly_customer_qty.plot(kind='bar', stacked=True, ax=ax1, colormap='tab20', width=1.0, legend=False)
+        total_monthly_sales = monthly_customer_qty.sum(axis=1)
+        ax1.plot(range(len(total_monthly_sales)), total_monthly_sales, color='black', marker='o', linestyle='-', linewidth=2, label='Total Sales')
+        ax1.set_title(f'Monthly Sales Quantity Distribution by Customer for Part {part_number}', fontsize=16, fontweight='bold', pad=12)
+        ax1.set_xlabel('Month', fontsize=13)
+        ax1.set_ylabel('Total Quantity Ordered', fontsize=13)
         ax1.set_xticks(range(len(month_labels)))
-        ax1.set_xticklabels(month_labels, rotation=45)
-        ax1.legend(title='Customer', bbox_to_anchor=(1.05, 1), loc='upper left')
+        ax1.set_xticklabels(month_labels, rotation=30, ha='right')
+        ax1.legend(title='Customer', bbox_to_anchor=(1.01, 1), loc='upper left')
         ax1.grid(True, alpha=0.3)
-        # Ensure y-axis only shows integer ticks
         ax1.yaxis.set_major_locator(mticker.MaxNLocator(integer=True))
-        # Add labels to each segment
         for i, month in enumerate(monthly_customer_qty.index):
             bottom = 0
             for j, cust in enumerate(monthly_customer_qty.columns):
                 qty = monthly_customer_qty.loc[month, cust]
                 if qty > 0:
-                    ax1.text(i, bottom + qty / 2, f'{int(qty)}', ha='center', va='center', fontsize=8, color='black', rotation=0)
+                    ax1.text(i, bottom + qty / 2, f'{int(qty)}', ha='center', va='center', fontsize=9, color='black', rotation=0)
                 bottom += qty
-        # 2. Pie chart: total quantity per customer (main + other)
-        plt.subplot(2, 1, 2)
-        plt.pie(pie_values, labels=pie_labels, autopct='%1.1f%%', startangle=90, colors=plt.get_cmap('tab20').colors)
-        plt.title(f'Top Customers by Quantity for Part {part_number}', fontsize=14, fontweight='bold')
+        # Bottom left: Pie chart
+        ax2 = fig.add_subplot(gs[1, 0])
+        wedges, texts, autotexts = ax2.pie(pie_values, labels=pie_labels, autopct='%1.1f%%', startangle=90, colors=plt.get_cmap('tab20').colors, textprops={'fontsize': 11, 'fontfamily': 'DejaVu Sans', 'color': '#222'})
+        for t in texts + autotexts:
+            t.set_fontsize(11)
+            t.set_fontfamily('DejaVu Sans')
+            t.set_color('#222')
+        ax2.set_title(f'Top Customers by Quantity for Part {part_number}', fontsize=14, fontweight='bold', pad=10)
+        # Calculate repeat buyers vs. one-time buyers
+        customer_order_counts = df.groupby('cust_id').size()
+        repeat_buyers = (customer_order_counts > 1).sum()
+        one_time_buyers = (customer_order_counts == 1).sum()
+        repeat_buyer_str = f"Repeat Buyers: {repeat_buyers} | One-time Buyers: {one_time_buyers}"
+        # Bottom right: Text summary
+        ax3 = fig.add_subplot(gs[1, 1])
+        ax3.axis('off')
         total_qty = daily_qty.sum()
         date_range = f"{df['so_date'].min().strftime('%Y-%m-%d')} to {df['so_date'].max().strftime('%Y-%m-%d')}"
-        plt.figtext(0.02, 0.01, f'Total Quantity: {total_qty} | Date Range: {date_range}\nTop 5 Customers: {top_customers_str}', fontsize=10, style='italic')
-        plt.tight_layout()
+        summary_lines = [
+            f"Total Quantity: {total_qty}",
+            f"Date Range: {date_range}",
+            f"Top 5 Customers: {top_customers_str}",
+            f"{repeat_buyer_str}",
+        ]
+        df['quarter'] = df['so_date'].dt.to_period('Q').dt.to_timestamp()
+        df['year'] = df['so_date'].dt.year
+        quarterly_sales = df.groupby('quarter')['qty'].sum()
+        yearly_sales = df.groupby('year')['qty'].sum()
+        quarterly_sales_str = ' | '.join([f"{q.strftime('%Y-Q%q') if hasattr(q, 'strftime') else str(q)}: {int(qty)}" for q, qty in quarterly_sales.items()])
+        yearly_sales_str = ' | '.join([f"{int(y)}: {int(qty)}" for y, qty in yearly_sales.items()])
+        summary_lines.append(f'Quarterly Sales: {quarterly_sales_str}')
+        summary_lines.append(f'Yearly Sales: {yearly_sales_str}')
+        # Join all lines into a single string, each on a new line
+        summary_text = '\n'.join(summary_lines)
+        import textwrap
+        wrapped_lines = []
+        for line in summary_lines:
+            wrapped_lines.extend(textwrap.wrap(line, width=45))
+        wrapped_text = '\n'.join(wrapped_lines)
+        # Calculate right margin in axes coordinates for 1 inch
+        fig_width_inch = fig.get_figwidth()
+        right_margin_frac = 1.0 - (1.0 / fig_width_inch)
+        ax3.set_xlim(0, right_margin_frac)
+        bbox_props = dict(facecolor='white', alpha=0.8, edgecolor='none', boxstyle='round,pad=0.3')
+        ax3.text(0, 1, wrapped_text, fontsize=13, fontfamily='DejaVu Sans', color='#222', ha='left', va='top', fontweight='bold', bbox=bbox_props, transform=ax3.transAxes, clip_on=False)
+        plt.tight_layout(rect=[0, 0, 1, 1])
         filename = f"sales_plot_{part_number}_{uuid.uuid4().hex[:8]}.png"
         buf = io.BytesIO()
         plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
