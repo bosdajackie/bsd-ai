@@ -163,7 +163,7 @@ class Pipeline:
         
         # Top 5 customers by quantity
         top_customers = customer_qty.head(5)
-        top_customers_str = ', '.join([f"{cust}: {qty}" for cust, qty in top_customers.items()])
+        top_customers_str = ', '.join([f"{cust}: {int(qty)}" for cust, qty in top_customers.items()])
         
         # Prepare monthly, customer-segmented data for the stacked bar chart
         df['month'] = df['so_date'].dt.to_period('M').dt.to_timestamp()
@@ -213,7 +213,16 @@ class Pipeline:
                 bottom += qty
         # Bottom left: Pie chart
         ax2 = fig.add_subplot(gs[1, 0])
-        wedges, texts, autotexts = ax2.pie(pie_values, labels=pie_labels, autopct='%1.1f%%', startangle=90, colors=plt.get_cmap('tab20').colors, textprops={'fontsize': 11, 'fontfamily': 'DejaVu Sans', 'color': '#222'})
+        wedges, texts, autotexts = ax2.pie(
+            pie_values,
+            labels=pie_labels,
+            autopct='%1.1f%%',
+            startangle=90,
+            colors=plt.get_cmap('tab20').colors,
+            textprops={'fontsize': 10, 'fontfamily': 'DejaVu Sans', 'color': '#222'},
+            labeldistance=1.15,   # Move labels outward
+            pctdistance=0.75      # Move percentages closer to edge
+        )
         for t in texts + autotexts:
             t.set_fontsize(11)
             t.set_fontfamily('DejaVu Sans')
@@ -239,7 +248,12 @@ class Pipeline:
         df['year'] = df['so_date'].dt.year
         quarterly_sales = df.groupby('quarter')['qty'].sum()
         yearly_sales = df.groupby('year')['qty'].sum()
-        quarterly_sales_str = ' | '.join([f"{q.strftime('%Y-Q%q') if hasattr(q, 'strftime') else str(q)}: {int(qty)}" for q, qty in quarterly_sales.items()])
+        # Format quarterly sales as 'YYYY-QN'
+        def format_quarter(q):
+            if hasattr(q, 'year') and hasattr(q, 'quarter'):
+                return f"{q.year}-Q{q.quarter}"
+            return str(q)
+        quarterly_sales_str = ' | '.join([f"{format_quarter(q)}: {int(qty)}" for q, qty in quarterly_sales.items()])
         yearly_sales_str = ' | '.join([f"{int(y)}: {int(qty)}" for y, qty in yearly_sales.items()])
         summary_lines.append(f'Quarterly Sales: {quarterly_sales_str}')
         summary_lines.append(f'Yearly Sales: {yearly_sales_str}')
